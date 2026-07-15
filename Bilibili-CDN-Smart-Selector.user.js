@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili Smart CDN + Adaptive Prefetch
 // @namespace    https://github.com/AchelousDev
-// @version      0.9.2
+// @version      0.9.3
 // @description  Improves Bilibili high-bitrate playback with smart CDN selection and adaptive media prefetching.
 // @author       AchelousDev
 // @license      MIT
@@ -20,7 +20,7 @@
     'use strict';
 
     const PLUGIN = '[BiliSmartCDN]';
-    const VERSION = '0.9.2';
+    const VERSION = '0.9.3';
 
     const AVOID_HOSTS = new Set([
         'upos-sz-mirrorcosov.bilivideo.com',
@@ -1844,7 +1844,11 @@
             !media?.url ||
             bytesToFetch <= 0
         ) {
-            return 0;
+            return {
+                bytes: 0,
+                completed: true,
+                failureReason: null,
+            };
         }
 
         const state =
@@ -1860,6 +1864,9 @@
 
         let recoveryAttempts =
             0;
+
+        let completed = true;
+        let failureReason = null;
 
         log(
             `${type} adaptive top-up started:`,
@@ -1966,6 +1973,10 @@
                 });
 
             if (!result) {
+                completed = false;
+                failureReason =
+                    'request failed';
+
                 lastPrefetchMessage =
                     `${type}: request failed`;
 
@@ -2119,7 +2130,13 @@
             );
         }
 
-        return completedBytes;
+        return {
+            bytes:
+                completedBytes,
+
+            completed,
+            failureReason,
+        };
     }
 
     async function startPausedPrefetch(
@@ -2319,8 +2336,20 @@
             }
         );
 
+        let videoResult = {
+            bytes: 0,
+            completed: true,
+            failureReason: null,
+        };
+
+        let audioResult = {
+            bytes: 0,
+            completed: true,
+            failureReason: null,
+        };
+
         try {
-            currentBatchVideoBytes =
+            videoResult =
                 await prefetchMedia({
                     type:
                         'video',
@@ -2339,6 +2368,9 @@
                     sessionId,
                 });
 
+            currentBatchVideoBytes =
+                videoResult.bytes;
+
             if (
                 !signal.aborted &&
                 sessionId ===
@@ -2348,7 +2380,7 @@
                 !pendingSeekBaseline.audio &&
                 audioPlan.topUpBytes > 0
             ) {
-                currentBatchAudioBytes =
+                audioResult =
                     await prefetchMedia({
                         type:
                             'audio',
@@ -2366,6 +2398,9 @@
 
                         sessionId,
                     });
+
+                currentBatchAudioBytes =
+                    audioResult.bytes;
             }
 
             if (
@@ -2382,30 +2417,77 @@
                         videoMedia.bandwidth
                     );
 
-                lastPrefetchMessage =
-                    currentBatchVideoBytes > 0
-                        ? `Topped up ${formatBytes(
-                            currentBatchVideoBytes
-                        )}, reserve ~${updatedReserveSeconds.toFixed(
-                            0
-                        )}s`
-                        : `Reserve ~${updatedReserveSeconds.toFixed(
-                            0
-                        )}s`;
+                const batchCompleted =
+                    videoResult.completed &&
+                    audioResult.completed;
 
-                log(
-                    'adaptive prefetch batch complete:',
-                    {
-                        videoBytes:
-                            currentBatchVideoBytes,
+                if (batchCompleted) {
+                    lastPrefetchMessage =
+                        currentBatchVideoBytes > 0
+                            ? `Topped up ${formatBytes(
+                                currentBatchVideoBytes
+                            )}, reserve ~${updatedReserveSeconds.toFixed(
+                                0
+                            )}s`
+                            : `Reserve ~${updatedReserveSeconds.toFixed(
+                                0
+                            )}s`;
 
-                        audioBytes:
-                            currentBatchAudioBytes,
+                    log(
+                        'adaptive prefetch batch complete:',
+                        {
+                            videoBytes:
+                                currentBatchVideoBytes,
 
-                        videoReserveSeconds:
-                            updatedReserveSeconds,
+                            audioBytes:
+                                currentBatchAudioBytes,
+
+                            videoReserveSeconds:
+                                updatedReserveSeconds,
+                        }
+                    );
+                } else {
+                    const failedParts = [];
+
+                    if (!videoResult.completed) {
+                        failedParts.push('video');
                     }
-                );
+
+                    if (!audioResult.completed) {
+                        failedParts.push('audio');
+                    }
+
+                    lastPrefetchMessage =
+                        `Partial failure: ${failedParts.join(
+                            ', '
+                        )}`;
+
+                    warn(
+                        'adaptive prefetch batch ended with partial failure:',
+                        {
+                            videoBytes:
+                                currentBatchVideoBytes,
+
+                            audioBytes:
+                                currentBatchAudioBytes,
+
+                            videoReserveSeconds:
+                                updatedReserveSeconds,
+
+                            videoCompleted:
+                                videoResult.completed,
+
+                            videoFailureReason:
+                                videoResult.failureReason,
+
+                            audioCompleted:
+                                audioResult.completed,
+
+                            audioFailureReason:
+                                audioResult.failureReason,
+                        }
+                    );
+                }
             }
         } catch (error) {
             if (
