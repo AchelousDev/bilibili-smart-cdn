@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili Smart CDN + Adaptive Prefetch
 // @namespace    https://github.com/AchelousDev
-// @version      0.9.1
+// @version      0.9.2
 // @description  Improves Bilibili high-bitrate playback with smart CDN selection and adaptive media prefetching.
 // @author       AchelousDev
 // @license      MIT
@@ -20,7 +20,7 @@
     'use strict';
 
     const PLUGIN = '[BiliSmartCDN]';
-    const VERSION = '0.9.1';
+    const VERSION = '0.9.2';
 
     const AVOID_HOSTS = new Set([
         'upos-sz-mirrorcosov.bilivideo.com',
@@ -68,6 +68,12 @@
     const PAUSE_PREFETCH_DELAY_MS = 1800;
     const PREFETCH_COOLDOWN_MS = 10_000;
     const MONITOR_INTERVAL_MS = 1000;
+
+    /*
+     * 单个 Range 请求的超时和重试限制。
+     */
+    const RANGE_REQUEST_TIMEOUT_MS = 15_000;
+    const RANGE_REQUEST_MAX_RETRIES = 1;
 
     /*
      * 接近 1 GB 的请求可能是探测 Range。
@@ -1555,96 +1561,226 @@
         end,
         signal
     ) {
-        const response =
-            await originalFetch.call(
-                unsafeWindow,
-                url,
+        const requestController =
+            new AbortController();
+
+        let timedOut = false;
+
+        const handleExternalAbort = () => {
+            requestController.abort();
+        };
+
+        if (signal?.aborted) {
+            requestController.abort();
+        } else if (signal) {
+            signal.addEventListener(
+                'abort',
+                handleExternalAbort,
                 {
-                    method:
-                        'GET',
-
-                    headers: {
-                        Range:
-                            `bytes=${start}-${end}`,
-                    },
-
-                    mode:
-                        'cors',
-
-                    credentials:
-                        'omit',
-
-                    cache:
-                        'default',
-
-                    referrer:
-                        location.href,
-
-                    signal,
+                    once: true,
                 }
             );
+        }
 
-        if (
-            response.status ===
-            416
-        ) {
-            const rawContentRange =
-                response.headers.get(
-                    'content-range'
+        const timeoutId =
+            setTimeout(
+                () => {
+                    timedOut = true;
+                    requestController.abort();
+                },
+                RANGE_REQUEST_TIMEOUT_MS
+            );
+
+        try {
+            const response =
+                await originalFetch.call(
+                    unsafeWindow,
+                    url,
+                    {
+                        method:
+                            'GET',
+
+                        headers: {
+                            Range:
+                                `bytes=${start}-${end}`,
+                        },
+
+                        mode:
+                            'cors',
+
+                        credentials:
+                            'omit',
+
+                        cache:
+                            'default',
+
+                        referrer:
+                            location.href,
+
+                        signal:
+                            requestController.signal,
+                    }
                 );
 
-            const unsatisfied =
-                parseUnsatisfiedContentRange(
-                    rawContentRange
+            if (
+                response.status ===
+                416
+            ) {
+                const rawContentRange =
+                    response.headers.get(
+                        'content-range'
+                    );
+
+                const unsatisfied =
+                    parseUnsatisfiedContentRange(
+                        rawContentRange
+                    );
+
+                return {
+                    bytes: 0,
+                    contentRange: null,
+
+                    total:
+                        unsatisfied?.total ??
+                        null,
+
+                    status: 416,
+                };
+            }
+
+            if (
+                response.status !==
+                    206 &&
+                response.status !==
+                    200
+            ) {
+                throw new Error(
+                    `Unexpected status ${response.status}`
                 );
+            }
+
+            const contentRange =
+                parseContentRange(
+                    response.headers.get(
+                        'content-range'
+                    )
+                );
+
+            const data =
+                await response
+                    .arrayBuffer();
 
             return {
-                bytes: 0,
-                contentRange: null,
+                bytes:
+                    data.byteLength,
+
+                contentRange,
 
                 total:
-                    unsatisfied?.total ??
+                    contentRange?.total ??
                     null,
 
-                status: 416,
+                status:
+                    response.status,
             };
-        }
+        } catch (error) {
+            if (
+                timedOut &&
+                !signal?.aborted
+            ) {
+                const timeoutError =
+                    new Error(
+                        `Range request timed out after ${RANGE_REQUEST_TIMEOUT_MS} ms`
+                    );
 
-        if (
-            response.status !==
-                206 &&
-            response.status !==
-                200
+                timeoutError.name =
+                    'TimeoutError';
+
+                throw timeoutError;
+            }
+
+            throw error;
+        } finally {
+            clearTimeout(
+                timeoutId
+            );
+
+            if (signal) {
+                signal.removeEventListener(
+                    'abort',
+                    handleExternalAbort
+                );
+            }
+        }
+    }
+
+    async function fetchRangeWithRetry({
+        type,
+        url,
+        start,
+        end,
+        signal,
+    }) {
+        for (
+            let attempt = 0;
+            attempt <=
+                RANGE_REQUEST_MAX_RETRIES;
+            attempt++
         ) {
-            throw new Error(
-                `Unexpected status ${response.status}`
-            );
+            try {
+                return await fetchRange(
+                    url,
+                    start,
+                    end,
+                    signal
+                );
+            } catch (error) {
+                if (
+                    signal?.aborted ||
+                    error?.name ===
+                        'AbortError'
+                ) {
+                    throw error;
+                }
+
+                if (
+                    attempt <
+                    RANGE_REQUEST_MAX_RETRIES
+                ) {
+                    warn(
+                        `${type} Range request retry:`,
+                        {
+                            start,
+                            end,
+                            attempt:
+                                attempt + 1,
+                            error:
+                                error?.message ||
+                                String(error),
+                        }
+                    );
+
+                    continue;
+                }
+
+                warn(
+                    `${type} Range failed after retries:`,
+                    {
+                        start,
+                        end,
+                        attempts:
+                            attempt + 1,
+                        error:
+                            error?.message ||
+                            String(error),
+                    }
+                );
+
+                return null;
+            }
         }
 
-        const contentRange =
-            parseContentRange(
-                response.headers.get(
-                    'content-range'
-                )
-            );
-
-        const data =
-            await response
-                .arrayBuffer();
-
-        return {
-            bytes:
-                data.byteLength,
-
-            contentRange,
-
-            total:
-                contentRange?.total ??
-                null,
-
-            status:
-                response.status,
-        };
+        return null;
     }
 
     function calculateRecoveryStart(
@@ -1820,12 +1956,21 @@
                 )}`;
 
             const result =
-                await fetchRange(
-                    media.url,
+                await fetchRangeWithRetry({
+                    type,
+                    url:
+                        media.url,
                     start,
                     end,
-                    signal
-                );
+                    signal,
+                });
+
+            if (!result) {
+                lastPrefetchMessage =
+                    `${type}: request failed`;
+
+                break;
+            }
 
             if (
                 result.status ===
