@@ -34,6 +34,8 @@
         'upos-sz-mirrorcos.bilivideo.com',
     ];
 
+    const DEBUG_MONITOR = false;
+
     /*
      * 额外预取目标。
      */
@@ -2501,22 +2503,23 @@
     }
 
     function startMonitor() {
-        createMonitorBox();
+    if (monitorTimer) {
+        clearInterval(
+            monitorTimer
+        );
+    }
 
-        if (monitorTimer) {
-            clearInterval(
-                monitorTimer
-            );
-        }
+    monitorTimer =
+        setInterval(
+            () => {
+                findVideoElement();
 
-        monitorTimer =
-            setInterval(
-                () => {
-                    findVideoElement();
+                if (DEBUG_MONITOR) {
                     updateMonitor();
-                },
-                MONITOR_INTERVAL_MS
-            );
+                }
+            },
+            MONITOR_INTERVAL_MS
+        );
     }
 
     hookPlayInfo();
