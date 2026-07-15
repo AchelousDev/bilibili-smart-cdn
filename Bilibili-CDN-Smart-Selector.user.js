@@ -1,13 +1,19 @@
 // ==UserScript==
-// @name         Bilibili CDN Smart Selector + Adaptive Prefetch
-// @namespace    https://tampermonkey.net/
+// @name         Bilibili Smart CDN + Adaptive Prefetch
+// @namespace    https://github.com/AchelousDev
 // @version      0.9.1
-// @description  Prefer signed Akamai URLs and maintain a bounded adaptive prefetch reserve while paused
-// @author       Achelous
+// @description  Improves Bilibili high-bitrate playback with smart CDN selection and adaptive media prefetching.
+// @author       AchelousDev
+// @license      MIT
 // @match        https://www.bilibili.com/video/*
 // @match        https://www.bilibili.com/bangumi/play/*
-// @run-at       document-start
+// @icon         https://www.bilibili.com/favicon.ico
+// @homepageURL  https://github.com/AchelousDev/bilibili-smart-cdn
+// @supportURL   https://github.com/AchelousDev/bilibili-smart-cdn/issues
+// @updateURL    https://raw.githubusercontent.com/AchelousDev/bilibili-smart-cdn/main/Bilibili-CDN-Smart-Selector.user.js
+// @downloadURL  https://raw.githubusercontent.com/AchelousDev/bilibili-smart-cdn/main/Bilibili-CDN-Smart-Selector.user.js
 // @grant        unsafeWindow
+// @run-at       document-start
 // ==/UserScript==
 
 (function () {
